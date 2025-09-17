@@ -1,0 +1,209 @@
+import React, { useEffect, useState, useRef } from 'react';
+
+/**
+ * Real-Time Chat (Single File React Component)
+ * - Connects to a WebSocket server (default ws://localhost:8080)
+ * - Shows messages, online users, typing indicator
+ * - Uses Tailwind classes for styling (no import required in this preview)
+ *
+ * How to use:
+ * 1) Start a WebSocket server (simple Node.js example included below).
+ * 2) Run this React component in any React app (create-react-app or Vite).
+ * 3) Open multiple browser tabs and connect with different usernames.
+ *
+ * Simple Node.js WebSocket server (save as server.js and run `node server.js`):
+ *
+ * const WebSocket = require('ws');
+ * const wss = new WebSocket.Server({ port: 8080 });
+ *
+ * const clients = new Map();
+ *
+ * function broadcast(obj, except) {
+ *   const msg = JSON.stringify(obj);
+ *   for (const [ws] of clients) {
+ *     if (ws !== except && ws.readyState === WebSocket.OPEN) ws.send(msg);
+ *   }
+ * }
+ *
+ * wss.on('connection', (ws) => {
+ *   // add placeholder until user registers
+ *   clients.set(ws, { username: null });
+ *
+ *   ws.on('message', (data) => {
+ *     let obj;
+ *     try { obj = JSON.parse(data); } catch (e) { return; }
+ *     if (obj.type === 'join') {
+ *       clients.set(ws, { username: obj.username });
+ *       // notify new user list
+ *       broadcast({ type: 'users', users: Array.from(clients.values()).map(c => c.username).filter(Boolean) });
+ *       broadcast({ type: 'system', text: `${obj.username} joined.` });
+ *     } else if (obj.type === 'msg') {
+ *       broadcast({ type: 'msg', username: obj.username, text: obj.text, id: Date.now() });
+ *     } else if (obj.type === 'typing') {
+ *       broadcast({ type: 'typing', username: obj.username, typing: obj.typing }, ws);
+ *     }
+ *   });
+ *
+ *   ws.on('close', () => {
+ *     const info = clients.get(ws);
+ *     clients.delete(ws);
+ *     if (info && info.username) {
+ *       broadcast({ type: 'system', text: `${info.username} left.` });
+ *       broadcast({ type: 'users', users: Array.from(clients.values()).map(c => c.username).filter(Boolean) });
+ *     }
+ *   });
+ * });
+ *
+ * console.log('WebSocket server running on ws://localhost:8080');
+ */
+
+export default function RealTimeChat({ wsUrl = 'ws://localhost:8080' }) {
+  const [ws, setWs] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [username, setUsername] = useState('');
+  const [inputName, setInputName] = useState('');
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [typingUsers, setTypingUsers] = useState(new Set());
+  const listRef = useRef(null);
+  const typingTimeout = useRef(null);
+
+  useEffect(() => {
+    // create websocket when component mounts
+    const socket = new WebSocket(wsUrl);
+    setWs(socket);
+
+    socket.addEventListener('open', () => setConnected(true));
+    socket.addEventListener('close', () => setConnected(false));
+
+    socket.addEventListener('message', (ev) => {
+      let obj;
+      try { obj = JSON.parse(ev.data); } catch (e) { return; }
+
+      if (obj.type === 'msg') {
+        setMessages((m) => [...m, { id: obj.id || Date.now(), user: obj.username, text: obj.text }]);
+      } else if (obj.type === 'system') {
+        setMessages((m) => [...m, { id: Date.now(), user: 'System', text: obj.text }]);
+      } else if (obj.type === 'users') {
+        setUsers(obj.users || []);
+      } else if (obj.type === 'typing') {
+        setTypingUsers((prev) => {
+          const next = new Set(prev);
+          if (obj.typing) next.add(obj.username); else next.delete(obj.username);
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      socket.close();
+    };
+  }, [wsUrl]);
+
+  useEffect(() => {
+    // auto-scroll to bottom when messages update
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const join = () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return alert('WebSocket not connected yet');
+    if (!inputName.trim()) return alert('Enter a username');
+    setUsername(inputName.trim());
+    ws.send(JSON.stringify({ type: 'join', username: inputName.trim() }));
+  };
+
+  const sendMsg = () => {
+    if (!message.trim()) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'msg', username, text: message.trim() }));
+    setMessages((m) => [...m, { id: Date.now(), user: username, text: message.trim() }]);
+    setMessage('');
+    sendTyping(false);
+  };
+
+  const sendTyping = (isTyping) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'typing', username, typing: isTyping }));
+  };
+
+  const onChangeMessage = (v) => {
+    setMessage(v);
+    if (!username) return;
+    // notify server we're typing
+    sendTyping(true);
+    if (typingTimeout.current) clearTimeout(typingTimeout.current);
+    typingTimeout.current = setTimeout(() => sendTyping(false), 800);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-lg grid grid-cols-12 overflow-hidden">
+        {/* Left: chat */}
+        <div className="col-span-8 p-4 flex flex-col">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Real-Time Chat</h2>
+            <div className="text-sm text-gray-600">Status: {connected ? <span className="text-green-600">Connected</span> : <span className="text-red-500">Disconnected</span>}</div>
+          </div>
+
+          {!username ? (
+            <div className="p-4 border rounded-lg">
+              <label className="block text-sm font-medium text-gray-700">Pick a username</label>
+              <div className="mt-2 flex gap-2">
+                <input value={inputName} onChange={(e) => setInputName(e.target.value)} placeholder="username" className="flex-1 p-2 border rounded" />
+                <button onClick={join} className="px-4 py-2 rounded bg-blue-600 text-white">Join</button>
+              </div>
+              <p className="mt-2 text-xs text-gray-500">This client will send your username to the server and announce presence.</p>
+            </div>
+          ) : (
+            <>
+              <div ref={listRef} className="flex-1 overflow-auto p-3 space-y-2 border rounded">
+                {messages.map((m) => (
+                  <div key={m.id} className={`p-2 rounded ${m.user === username ? 'bg-blue-50 self-end' : m.user === 'System' ? 'bg-gray-100 text-gray-700 italic' : 'bg-gray-100'}`}>
+                    <div className="text-xs text-gray-500">{m.user}</div>
+                    <div className="text-sm">{m.text}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 flex items-center gap-2">
+                <input value={message} onChange={(e) => onChangeMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendMsg(); }} placeholder="Type a message..." className="flex-1 p-2 border rounded" />
+                <button onClick={sendMsg} className="px-4 py-2 rounded bg-green-600 text-white">Send</button>
+              </div>
+
+              <div className="mt-2 text-xs text-gray-500">
+                {Array.from(typingUsers).filter(u => u !== username).length > 0 && (
+                  <div>{Array.from(typingUsers).filter(u => u !== username).join(', ')} typing...</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right: users */}
+        <div className="col-span-4 border-l p-4 bg-gray-50">
+          <h3 className="text-sm font-medium">Online</h3>
+          <div className="mt-2 space-y-2">
+            {users.length === 0 ? (
+              <div className="text-xs text-gray-500">No users online</div>
+            ) : (
+              users.map((u) => (
+                <div key={u} className={`p-2 rounded ${u === username ? 'bg-blue-100 font-semibold' : 'bg-white'}`}>{u}</div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-6 text-xs text-gray-500">
+            <div>Tips:</div>
+            <ul className="list-disc ml-4 mt-2">
+              <li>Open multiple tabs and join with different names to test.</li>
+              <li>Run the included server example on port 8080, or change <code>wsUrl</code>.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
